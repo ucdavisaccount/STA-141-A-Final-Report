@@ -1,0 +1,372 @@
+---
+title: 'STA141A: Project'
+author: "Suranjana Sooraj"
+date: "2024-03-10"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(caret) 
+```
+
+
+```{r}
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('/Users/sooraj/Downloads/STA1/sessions/session',i,'.rds',sep=''))
+}
+
+summary(session[[1]])
+names(session[[1]])
+
+dim(session[[1]]$spks[[1]]) 
+length(session[[1]]$brain_area)
+dim(session[[1]]$spks[[1]])
+```
+
+***
+# Data Pre-Processing
+
+```{r,echo=FALSE}
+get_trial_data = function(session_id, trial_id){
+  spikes = session[[session_id]]$spks[[trial_id]]
+  if (any(is.na(spikes))){
+    disp("value missing")
+  }
+  trial_tib = tibble("neuron_spike" = rowSums(spikes))  %>%  add_column("brain_area" = session[[session_id]]$brain_area ) %>% group_by(brain_area) %>% summarize( region_sum_spike = sum(neuron_spike), region_count = n(),region_mean_spike = mean(neuron_spike)) 
+  trial_tib  = trial_tib%>% add_column("trial_id" = trial_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trial_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trial_id]) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trial_id])
+  trial_tib
+}
+
+# Example usage:
+trial_data <- get_trial_data(1, 2)
+print(trial_data)
+```
+
+
+```{r,echo=FALSE}
+get_session_data = function(session_id){
+  n_trial = length(session[[session_id]]$spks)
+  trial_list = list()
+  for (trial_id in 1:n_trial){
+    trial_tib = get_trial_data(session_id,trial_id)
+    trial_list[[trial_id]] = trial_tib
+  }
+  session_tib = do.call(rbind, trial_list)
+  session_tib = session_tib %>% add_column("mouse_name" = session[[session_id]]$mouse_name) %>% add_column("date_exp" = session[[session_id]]$date_exp) %>% add_column("session_id" = session_id) 
+  session_tib
+}
+
+ses_1 = get_session_data(1)
+head(ses_1)
+
+```
+
+
+```{r}
+session_list = list()
+for (session_id in 1: 18){
+  session_list[[session_id]] <- get_session_data(session_id)
+}
+full <- do.call(rbind, session_list)
+full$success <- full$feedback_type == 1
+full$success <- as.numeric(full$success)
+full$contrast_diff <- abs(full$contrast_left-full$contrast_right)
+
+```
+
+
+```{r}
+binename <- paste0("bin", as.character(1:40))
+
+get_trial_functional_data <- function(session_id, trial_id){
+  spikes <- session[[session_id]]$spks[[trial_id]]
+  if (any(is.na(spikes))){
+    disp("value missing")
+  }
+
+  trial_bin_average <- matrix(colMeans(spikes), nrow = 1)
+  colnames(trial_bin_average) <- binename
+  trial_tib  = as_tibble(trial_bin_average)%>% add_column("trial_id" = trial_id) %>% add_column("contrast_left"= session[[session_id]]$contrast_left[trial_id]) %>% add_column("contrast_right"= session[[session_id]]$contrast_right[trial_id]) %>% add_column("feedback_type"= session[[session_id]]$feedback_type[trial_id])
+  
+  trial_tib
+}
+get_session_functional_data <- function(session_id){
+  n_trial <- length(session[[session_id]]$spks)
+  trial_list <- list()
+  for (trial_id in 1:n_trial){
+    trial_tib <- get_trial_functional_data(session_id,trial_id)
+    trial_list[[trial_id]] <- trial_tib
+  }
+  session_tib <- as_tibble(do.call(rbind, trial_list))
+  session_tib <- session_tib %>% add_column("mouse_name" = session[[session_id]]$mouse_name) %>% add_column("date_exp" = session[[session_id]]$date_exp) %>% add_column("session_id" = session_id) 
+  session_tib
+}
+```
+
+
+```{r}
+session_list = list()
+for (session_id in 1: 18){
+  session_list[[session_id]] <- get_session_functional_data(session_id)
+}
+full_func <- as_tibble(do.call(rbind, session_list))
+full_func$session_id <- as.factor(full_func$session_id )
+full_func$contrast_diff <- abs(full_func$contrast_left-full_func$contrast_right)
+
+full_func$success <- full_func$feedback_type == 1
+full_func$success <- as.numeric(full_func$success)
+```
+
+```{r}
+head(full_func)
+```
+
+***
+
+***
+#EDA
+
+```{r,echo=FALSE}
+full_func %>% group_by(mouse_name) %>% summarize(success_rate = mean(success, na.rm = TRUE))
+```
+
+
+```{r}
+full %>% filter (trial_id==1) %>% group_by(session_id) %>% summarise(sum(region_count))
+```
+
+```{r}
+ggplot(data = full, aes(x = brain_area, y = region_mean_spike)) +
+  geom_bar(stat = "summary", fun = "mean", fill = "skyblue") +
+  labs(x = "Brain Area", y = "Average Spike") +
+  ggtitle("Average Spike Across Brain Area") + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+
+```{r}
+sessions_with_RN <- full %>% filter(brain_area == "RN") %>% select(session_id)
+unique_sessions_with_RN <- unique(sessions_with_RN$session_id)
+print(unique_sessions_with_RN)
+```
+
+
+```{r,echo=FALSE}
+mean_subset <- names(full_func)[grep("^region_mean", names(full_func))]
+```
+
+
+```{r,echo=FALSE}
+average_spike <- full %>% 
+  group_by(session_id, trial_id) %>% 
+  summarise(mean_spike = mean(region_mean_spike))
+
+average_spike$mouse_name <- full_func$mouse_name
+average_spike$contrast_diff <- full_func$contrast_diff
+average_spike$success <- full_func$success
+
+ggplot(average_spike, aes(x = trial_id, y = mean_spike)) + 
+  geom_line() +
+  geom_smooth(method = "loess") + 
+  facet_wrap(~session_id)
+```
+lower mean for those with greter than 1000 neurons and session 11 has the most fluctuations when dealing with averge spike rates across all trials. 
+
+```{r}
+# Load necessary libraries
+library(tidyr)
+
+# Define spike columns
+spike_columns <- paste0("bin", 1:40)
+
+# Reshape data from wide to long format
+data_long <- full_func %>%
+  gather(key = "bin", value = "value", spike_columns) %>%
+  mutate(bin = as.numeric(gsub("bin", "", bin)))
+
+# Fit 2-way ANOVA model
+anova_model <- lm(success ~ bin * contrast_diff, data = data_long)
+anova_results <- anova(anova_model)
+print(anova_results)
+
+```
+
+
+```{r}
+# Pivot the data to long format
+full_func_long <- pivot_longer(full_func, cols = paste0("bin", 1:40), names_to = "bin", values_to = "value")
+# Plot the data
+ggplot(data = full_func_long, aes(x = fct_inorder(bin), y = value, color = factor(success))) +
+  geom_line(size = 1,stat="identity") +
+  labs(x = "Bin", y = "Value", color = "Success") +
+  scale_color_manual(values = c("blue", "red")) + 
+  ggtitle("Success Across Bins") + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
+
+```
+
+***
+
+***
+# Data Integration
+
+```{r}
+feat = full_func[,1:40]
+scaled_feat = scale(feat)
+pca_result = prcomp(scaled_feat)
+pc_df = as.data.frame(pca_result$x)
+pc_df$session_id = full_func$session_id
+
+ggplot(pc_df, aes(x = PC1, y = PC2, color = session_id)) +
+  geom_point() +
+  labs(title = "PCA: PC1 vs PC2, distinguished by Session ID")
+```
+
+
+```{r}
+# Retrieve column names for all 40 bins
+spike_columns <- paste0("bin", 1:40)
+
+# Standardize the selected columns
+full_func[spike_columns] <- scale(full_func[spike_columns])
+
+predictive_feature <- c("session_id", "feedback_type", "trial_id","contrast_right","contrast_left",binename, "success")
+temp = full_func[predictive_feature]
+
+# Split data to get augmented focus on the first 20 and last 20 bins
+integrated_1= temp %>% select(session_id,trial_id,contrast_right,
+                              contrast_left,(paste0("bin", as.character(1:20))))
+integrated_2= temp %>% select(session_id,trial_id,contrast_right,
+                              contrast_left,(paste0("bin", as.character(21:40))))
+head(integrated_2)
+head(integrated_1)
+```
+
+***
+
+***
+# Predictive modeling
+
+## xgboost
+```{r,echo=FALSE}
+library(xgboost)
+set.seed(123) # for reproducibility
+check_xgboost <- function(dataset){
+    predictive_dat = dataset
+    predictive_dat$trial_id <- as.numeric(dataset$trial_id)
+    label <- as.numeric(full_func$success)
+    X <- model.matrix(~., dataset)
+    
+    trainIndex <- createDataPartition(dataset$session_id, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+    train_df <- dataset[trainIndex, ]
+    train_X <- X[trainIndex,]
+    test_df <- dataset[-trainIndex, ]
+    test_X <- X[-trainIndex,]
+    train_label <- label[trainIndex]
+    test_label <- label[-trainIndex]
+    xgb_model <- xgboost(data = train_X, label = train_label, objective = "binary:logistic", nrounds=10)
+    predictions <- predict(xgb_model, newdata = test_X)
+    predicted_labels <- as.numeric(ifelse(predictions > 0.5, 1, 0))
+    accuracy <- mean(predicted_labels == test_label)
+    conf_matrix <- confusionMatrix(as.factor(predicted_labels), as.factor(test_label))
+    conf_matrix$table
+    return(accuracy)
+}
+
+accy_integrated_1 <- check_xgboost(integrated_1)
+acc_integrated_2 <- check_xgboost(integrated_2)
+
+print(paste("Accuracy for first 20 bins:", accy_integrated_1))
+print(paste("Accuracy for last 20 bins:", acc_integrated_2))
+
+```
+
+
+
+## logistic regression
+```{r}
+set.seed(3)
+check_logistic_regression <- function(dataset){
+    predictive_dat = dataset
+    predictive_dat$trial_id <- as.numeric(dataset$trial_id)
+    label <- as.numeric(full_func$success)
+    X <- model.matrix(~., dataset)
+    
+    trainIndex <- createDataPartition(dataset$session_id, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+    train_df <- dataset[trainIndex, ]
+    train_X <- X[trainIndex,]
+    test_df <- dataset[-trainIndex, ]
+    test_X <- X[-trainIndex,]
+    train_label <- label[trainIndex]
+    test_label <- label[-trainIndex]
+    logistic_model <- glm(train_label ~ ., data = train_df, family = binomial)
+    
+    predictions <- predict(logistic_model, newdata = test_df, type = "response")
+    predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+    accuracy <- mean(predicted_classes == test_label)
+    print(paste("Accuracy:", accuracy))
+}
+
+check_logistic_regression(integrated_1)
+check_logistic_regression(integrated_2)
+```
+
+## random forest
+```{r}
+library(randomForest)
+integrated_3= temp %>% select(session_id,trial_id,feedback_type, contrast_right,
+                              contrast_left,(paste0("bin", as.character(1:20))))
+integrated_4= temp %>% select(session_id,trial_id,feedback_type, contrast_right,
+                              contrast_left,(paste0("bin", as.character(21:40))))
+
+set.seed(123)
+
+check_logistic_regression <- function(dataset){
+  predictive_dat = dataset
+  predictive_dat$trial_id <- as.numeric(predictive_dat$trial_id)
+  label <- as.numeric(temp$success)
+  X <- model.matrix(~., predictive_dat)
+
+
+  trainIndex <- createDataPartition(full_func$session_id, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+  train_df <- predictive_dat[trainIndex, ]
+  train_X <- X[trainIndex,]
+  test_df <- predictive_dat[-trainIndex, ]
+  test_X <- X[-trainIndex,]
+
+  train_label <- label[trainIndex]
+  test_label <- label[-trainIndex]
+
+  preds = setdiff(names(train_df), "feedback_type")
+  rf = randomForest(
+  formula = as.formula("feedback_type ~."),
+  data = train_df,
+  ntree = 500,
+  mttry = sqrt(length(preds)),
+  importance = TRUE
+  )
+
+  rand_pred = predict(rf, newdata = test_df[, -which(names(test_df) %in% c("feedback_type"))])
+  binary = ifelse(rand_pred > 0, 1, -1)
+  confmat = table(Actual = test_df$feedback_type, Predicted = binary)
+  cat('\n Confusion Matrix \n')
+  print(confmat)
+  
+  }
+check_logistic_regression(integrated_3)
+check_logistic_regression(integrated_4)
+
+```
+
+***
